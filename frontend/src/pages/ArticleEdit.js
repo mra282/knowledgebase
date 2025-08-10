@@ -420,7 +420,7 @@ const ArticleEdit = () => {
 
   <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm border border-gray-200">
           <div className="px-6 py-6 space-y-6">
-            {/* Content */}
+            {/* Title */}
             <div>
               <label htmlFor="title" className="block text-sm font-medium text-gray-700 mb-2">
                 Title *
