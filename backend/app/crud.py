@@ -194,7 +194,7 @@ def publish_draft_version(db: Session, article_id: int, version_number: int) -> 
     db.refresh(art)
     # Mark draft as published and snapshot a published version
     ver.is_draft = False
-    ver.published_at = datetime.utcnow()
+    ver.published_at = datetime.now(timezone.utc)
     db.commit()
     _create_article_version(db, art, is_draft=False)
     return art
