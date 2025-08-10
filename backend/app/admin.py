@@ -390,6 +390,73 @@ def set_article_products(
         raise HTTPException(status_code=404, detail="Article not found")
     return crud.set_article_products(db, article_id, payload.product_ids)
 
+# =====================
+# Article Versioning API
+# =====================
+
+@router.get("/articles/{article_id}/versions", response_model=List[schemas.ArticleVersionResponse])
+def list_versions(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+    return crud.list_article_versions(db, article_id)
+
+@router.post("/articles/{article_id}/versions/draft", response_model=schemas.ArticleVersionResponse, status_code=201)
+def create_draft(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    draft = crud.create_draft_version(db, article_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Article not found")
+    return draft
+
+@router.put("/articles/{article_id}/versions/{version_number}", response_model=schemas.ArticleVersionResponse)
+def update_draft(
+    article_id: int,
+    version_number: int,
+    payload: schemas.ArticleVersionDraftUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    draft = crud.update_draft_version(db, article_id, version_number, payload.dict(exclude_unset=True))
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft
+
+@router.post("/articles/{article_id}/versions/{version_number}/publish", response_model=schemas.ArticleResponse)
+def publish_draft(
+    article_id: int,
+    version_number: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    art = crud.publish_draft_version(db, article_id, version_number)
+    if not art:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return schemas.ArticleResponse.from_orm(art)
+
+@router.post("/articles/{article_id}/versions/{version_number}/rollback", response_model=schemas.ArticleResponse)
+def rollback_article(
+    article_id: int,
+    version_number: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    art = crud.rollback_article_to_version(db, article_id, version_number)
+    if not art:
+        raise HTTPException(status_code=404, detail="Version not found or not publishable")
+    return schemas.ArticleResponse.from_orm(art)
+
 # Utility endpoints for field management
 
 @router.get("/field-types")

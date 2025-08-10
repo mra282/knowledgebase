@@ -99,6 +99,35 @@ class SearchResult(BaseModel):
     total_results: int
     search_time_ms: float
 
+# ======================
+# Article Version Schemas
+# ======================
+
+class ArticleVersionResponse(BaseModel):
+    """Schema representing a snapshot/version of an article."""
+    id: int
+    article_id: int
+    version_number: int
+    title: str
+    content: str
+    tags: Optional[List[str]] = []
+    weight_score: float
+    is_public: bool
+    is_draft: bool
+    created_at: datetime
+    published_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class ArticleVersionDraftUpdate(BaseModel):
+    """Payload for updating a draft version. All fields optional."""
+    title: Optional[str] = None
+    content: Optional[str] = None
+    tags: Optional[List[str]] = None
+    weight_score: Optional[float] = None
+    is_public: Optional[bool] = None
+
 # ===============
 # Taxonomy Schemas
 # ===============

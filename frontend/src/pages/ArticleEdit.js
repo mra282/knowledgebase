@@ -33,6 +33,9 @@ const ArticleEdit = () => {
   const [products, setProducts] = useState([]);
   const [selectedPlatformIds, setSelectedPlatformIds] = useState([]);
   const [selectedProductIds, setSelectedProductIds] = useState([]);
+  // Versioning state
+  const [versions, setVersions] = useState([]);
+  const [draftVersion, setDraftVersion] = useState(null);
 
   const loadArticle = useCallback(async () => {
     setLoading(true);
@@ -96,6 +99,29 @@ const ArticleEdit = () => {
     }
 
     loadArticle();
+    // Load versions (admin endpoint preferred)
+    (async () => {
+      try {
+        const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+        let resp;
+        const headers = {};
+        if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+        // Try admin endpoint for full list (including drafts)
+        resp = await fetch(`${apiBase}/admin/articles/${id}/versions`, { headers });
+        if (resp.ok) {
+          const data = await resp.json();
+          setVersions(data || []);
+          const draft = (data || []).find(v => v.is_draft);
+          setDraftVersion(draft || null);
+        } else {
+          // Fallback to public published versions
+          const pub = await fetch(`${apiBase}/articles/${id}/versions`);
+          if (pub.ok) setVersions(await pub.json());
+        }
+      } catch (e) {
+        console.warn('Failed to load versions:', e);
+      }
+    })();
   }, [navigate, loadArticle]);
 
   const handleInputChange = (e) => {
@@ -233,6 +259,97 @@ const ArticleEdit = () => {
     }
   };
 
+  // ===== Versioning actions =====
+  const handleSaveDraft = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+      const headers = { 'Content-Type': 'application/json' };
+      if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+
+      let draft = draftVersion;
+      if (!draft) {
+        const createResp = await fetch(`${apiBase}/admin/articles/${id}/versions/draft`, { method: 'POST', headers });
+        if (!createResp.ok) throw new Error('Failed to create draft');
+        draft = await createResp.json();
+        setDraftVersion(draft);
+      }
+      const updateResp = await fetch(`${apiBase}/admin/articles/${id}/versions/${draft.version_number}`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({
+          title: formData.title,
+          content: formData.content,
+          tags: formData.tags,
+          is_public: formData.is_public,
+          // weight_score not in this form; leave unchanged
+        }),
+      });
+      if (!updateResp.ok) throw new Error('Failed to save draft');
+      const updated = await updateResp.json();
+      setDraftVersion(updated);
+      // Refresh list
+      const listResp = await fetch(`${apiBase}/admin/articles/${id}/versions`, { headers });
+      if (listResp.ok) setVersions(await listResp.json());
+      setSuccess(true);
+    } catch (e) {
+      setError(e.message || 'Failed to save draft');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePublishDraft = async () => {
+    if (!draftVersion) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+      const headers = {};
+      if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+      const resp = await fetch(`${apiBase}/admin/articles/${id}/versions/${draftVersion.version_number}/publish`, {
+        method: 'POST',
+        headers,
+      });
+      if (!resp.ok) throw new Error('Failed to publish draft');
+      // Refresh article and versions
+      await loadArticle();
+      const listResp = await fetch(`${apiBase}/admin/articles/${id}/versions`, { headers });
+      if (listResp.ok) setVersions(await listResp.json());
+      setDraftVersion(null);
+      setSuccess(true);
+    } catch (e) {
+      setError(e.message || 'Failed to publish draft');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRollback = async (versionNumber) => {
+    if (!window.confirm(`Rollback to version ${versionNumber}? This will overwrite the live article.`)) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+      const headers = {};
+      if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+      const resp = await fetch(`${apiBase}/admin/articles/${id}/versions/${versionNumber}/rollback`, {
+        method: 'POST',
+        headers,
+      });
+      if (!resp.ok) throw new Error('Failed to rollback');
+      await loadArticle();
+      const listResp = await fetch(`${apiBase}/admin/articles/${id}/versions`, { headers });
+      if (listResp.ok) setVersions(await listResp.json());
+      setSuccess(true);
+    } catch (e) {
+      setError(e.message || 'Failed to rollback');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
@@ -301,7 +418,7 @@ const ArticleEdit = () => {
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm border border-gray-200">
+  <form onSubmit={handleSubmit} className="bg-white rounded-lg shadow-sm border border-gray-200">
           <div className="px-6 py-6 space-y-6">
             {/* Title */}
             <div>
@@ -476,6 +593,25 @@ const ArticleEdit = () => {
                 Delete Article
               </button>
               <div className="flex space-x-3">
+                {/* Draft controls */}
+                <button
+                  type="button"
+                  onClick={handleSaveDraft}
+                  className="px-4 py-2 border border-blue-300 text-blue-700 rounded-md hover:bg-blue-50"
+                  disabled={saving}
+                >
+                  Save Draft
+                </button>
+                {draftVersion && (
+                  <button
+                    type="button"
+                    onClick={handlePublishDraft}
+                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+                    disabled={saving}
+                  >
+                    Publish Draft (v{draftVersion.version_number})
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleCancel}
@@ -495,6 +631,53 @@ const ArticleEdit = () => {
             </div>
           </div>
         </form>
+
+        {/* Versions panel */}
+        <div className="mt-8 bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-gray-800">Versions</h3>
+            <span className="text-sm text-gray-500">{versions.length} versions</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Version</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Published</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {versions.map(v => (
+                  <tr key={v.id}>
+                    <td className="px-6 py-4 whitespace-nowrap">v{v.version_number}</td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 text-xs rounded ${v.is_draft ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
+                        {v.is_draft ? 'Draft' : 'Published'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(v.created_at).toLocaleString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{v.published_at ? new Date(v.published_at).toLocaleString() : '-'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      {!v.is_draft && (
+                        <button className="text-blue-600 hover:text-blue-800" onClick={() => handleRollback(v.version_number)}>
+                          Rollback to this version
+                        </button>
+                      )}
+                      {v.is_draft && (
+                        <button className="text-green-600 hover:text-green-800" onClick={() => handlePublishDraft(v.version_number)}>
+                          Publish Draft
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </main>
     </div>
   );

@@ -13,7 +13,7 @@ from app.schemas import (
     SearchResult, HealthCheck, UserInfo, UserPermissionsResponse, UsersList,
     AdminDashboardStats, UserPermissionsUpdate, UserRole, LoginRequest, LoginResponse, RegisterRequest,
     ArticleImportRequest, ArticleImportResponse, DatabaseWipeResponse,
-    PlatformResponse, ProductResponse
+    PlatformResponse, ProductResponse, ArticleVersionResponse
 )
 from app import crud
 from app.search import get_search_service, get_rag_service, SearchService, RAGService
@@ -147,6 +147,14 @@ def delete_article(article_id: int, db: Session = Depends(get_db)):
     success = crud.delete_article(db, article_id=article_id)
     if not success:
         raise HTTPException(status_code=404, detail="Article not found")
+
+# Public: list published versions
+@app.get("/articles/{article_id}/versions", response_model=List[ArticleVersionResponse])
+def list_article_versions_public(article_id: int, db: Session = Depends(get_db)):
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+    versions = [v for v in crud.list_article_versions(db, article_id) if not v.is_draft]
+    return versions
 
 # Search endpoints
 @app.get("/search", response_model=SearchResult)

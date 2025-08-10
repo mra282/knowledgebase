@@ -10,6 +10,8 @@ const ArticleView = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [user, setUser] = useState(null);
+  const [versions, setVersions] = useState([]);
+  const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
 
   const loadArticle = useCallback(async (incrementView = true) => {
     setLoading(true);
@@ -19,8 +21,8 @@ const ArticleView = () => {
       // Only increment view count for non-authenticated users
       const shouldIncrementView = incrementView && !authService.isAuthenticated();
       const url = shouldIncrementView 
-        ? `http://localhost:8001/articles/${id}`
-        : `http://localhost:8001/articles/${id}?no_count=true`;
+        ? `${apiBase}/articles/${id}`
+        : `${apiBase}/articles/${id}?no_count=true`;
         
       const response = await fetch(url);
       if (response.ok) {
@@ -43,11 +45,20 @@ const ArticleView = () => {
   useEffect(() => {
     setUser(authService.getCurrentUser());
     loadArticle();
+    // Load published versions (public endpoint)
+    (async () => {
+      try {
+        const resp = await fetch(`${apiBase}/articles/${id}/versions`);
+        if (resp.ok) setVersions(await resp.json());
+      } catch (e) {
+        console.warn('Failed to load versions', e);
+      }
+    })();
   }, [loadArticle]);
 
   const handleVoteHelpful = async () => {
     try {
-      const response = await fetch(`http://localhost:8001/articles/${id}/helpful`, {
+  const response = await fetch(`${apiBase}/articles/${id}/helpful`, {
         method: 'POST'
       });
       
@@ -74,7 +85,7 @@ const ArticleView = () => {
           headers['Authorization'] = `Bearer ${authService.getToken()}`;
         }
 
-        const response = await fetch(`http://localhost:8001/articles/${id}`, {
+  const response = await fetch(`${apiBase}/articles/${id}`, {
           method: 'DELETE',
           headers
         });
@@ -205,6 +216,33 @@ const ArticleView = () => {
               />
             </div>
           </div>
+
+          {/* Published Versions */}
+          {versions && versions.length > 0 && (
+            <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Published Versions</h2>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                  <thead className="bg-gray-50 dark:bg-gray-900">
+                    <tr>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Version</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Published</th>
+                      <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Title</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                    {versions.map(v => (
+                      <tr key={v.id}>
+                        <td className="px-4 py-2">v{v.version_number}</td>
+                        <td className="px-4 py-2">{v.published_at ? new Date(v.published_at).toLocaleString() : '-'}</td>
+                        <td className="px-4 py-2 truncate">{v.title}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Article actions */}
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">

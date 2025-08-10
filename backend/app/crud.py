@@ -13,6 +13,7 @@ from app.models import (
     Product,
     ArticlePlatform,
     ArticleProduct,
+    ArticleVersion,
 )
 from app.schemas import ArticleCreate, ArticleUpdate, DynamicFieldCreate, DynamicFieldUpdate, DynamicFieldOptionCreate, ArticleFieldValueCreate
 from datetime import datetime
@@ -78,6 +79,8 @@ def create_article(db: Session, article: ArticleCreate) -> Article:
     db.add(db_article)
     db.commit()
     db.refresh(db_article)
+    # Create initial version 1 (published)
+    _create_article_version(db, db_article, is_draft=False)
     return db_article
 
 def update_article(db: Session, article_id: int, article_update: ArticleUpdate) -> Optional[Article]:
@@ -92,7 +95,109 @@ def update_article(db: Session, article_id: int, article_update: ArticleUpdate) 
     
     db.commit()
     db.refresh(db_article)
+    # Create a new published version snapshot after update
+    _create_article_version(db, db_article, is_draft=False)
     return db_article
+
+# ==================
+# Versioning helpers
+# ==================
+
+def _next_version_number(db: Session, article_id: int) -> int:
+    current = (
+        db.query(func.max(ArticleVersion.version_number))
+        .filter(ArticleVersion.article_id == article_id)
+        .scalar()
+    )
+    return (current or 0) + 1
+
+def _create_article_version(db: Session, article: Article, is_draft: bool = False) -> ArticleVersion:
+    vnum = _next_version_number(db, article.id)
+    version = ArticleVersion(
+        article_id=article.id,
+        version_number=vnum,
+        title=article.title,
+        content=article.content,
+        tags=article.tags or [],
+        weight_score=article.weight_score,
+        is_public=article.is_public,
+        is_draft=is_draft,
+        published_at=None if is_draft else datetime.now(timezone.utc),
+    )
+    db.add(version)
+    db.commit()
+    db.refresh(version)
+    return version
+
+def list_article_versions(db: Session, article_id: int) -> List[ArticleVersion]:
+    return (
+        db.query(ArticleVersion)
+        .filter(ArticleVersion.article_id == article_id)
+        .order_by(desc(ArticleVersion.version_number))
+        .all()
+    )
+
+def get_article_version(db: Session, article_id: int, version_number: int) -> Optional[ArticleVersion]:
+    return (
+        db.query(ArticleVersion)
+        .filter(ArticleVersion.article_id == article_id, ArticleVersion.version_number == version_number)
+        .first()
+    )
+
+def rollback_article_to_version(db: Session, article_id: int, version_number: int) -> Optional[Article]:
+    art = get_article(db, article_id)
+    if not art:
+        return None
+    ver = get_article_version(db, article_id, version_number)
+    if not ver or ver.is_draft:
+        return None
+    art.title = ver.title
+    art.content = ver.content
+    art.tags = ver.tags or []
+    art.weight_score = ver.weight_score
+    art.is_public = ver.is_public
+    db.commit()
+    db.refresh(art)
+    # Snapshot new published version
+    _create_article_version(db, art, is_draft=False)
+    return art
+
+def create_draft_version(db: Session, article_id: int) -> Optional[ArticleVersion]:
+    art = get_article(db, article_id)
+    if not art:
+        return None
+    return _create_article_version(db, art, is_draft=True)
+
+def update_draft_version(db: Session, article_id: int, version_number: int, data: Dict) -> Optional[ArticleVersion]:
+    ver = get_article_version(db, article_id, version_number)
+    if not ver or not ver.is_draft:
+        return None
+    for k in ["title", "content", "tags", "weight_score", "is_public"]:
+        if k in data and data[k] is not None:
+            setattr(ver, k, data[k])
+    db.commit()
+    db.refresh(ver)
+    return ver
+
+def publish_draft_version(db: Session, article_id: int, version_number: int) -> Optional[Article]:
+    art = get_article(db, article_id)
+    ver = get_article_version(db, article_id, version_number)
+    if not art or not ver or not ver.is_draft:
+        return None
+    # Apply draft to live article
+    art.title = ver.title
+    art.content = ver.content
+    art.tags = ver.tags or []
+    art.weight_score = ver.weight_score
+    art.is_public = ver.is_public
+    db.commit()
+    db.refresh(art)
+    # Mark draft as published and snapshot a published version
+    ver.is_draft = False
+    ver.published_at = datetime.now(timezone.utc)
+    db.commit()
+    _create_article_version(db, art, is_draft=False)
+    return art
 
 def delete_article(db: Session, article_id: int) -> bool:
     """Soft delete an article"""
