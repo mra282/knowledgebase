@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.venv/
+venv/
+
+# Node
+node_modules/
+build/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local data
+.env
+.env.*
+
+# Test data (not needed in repo)
+test_data/
+
+# Visual Studio Code
+.vscode/
+.vs/
+
+# Database files
+*.sqlite
+*.sqlite3
+*.db

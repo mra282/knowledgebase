@@ -1,0 +1,63 @@
+services:
+  # PostgreSQL database service (for Docker/production-like setup)
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=knowledgebase
+      - POSTGRES_USER=kb_user
+      - POSTGRES_PASSWORD=kb_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - knowledgebase-network
+
+  # Backend API service (using PostgreSQL)
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"  # Changed to avoid conflict with your auth service
+    volumes:
+      - ./backend/app:/app/app  # Enable hot reload for development
+    environment:
+      - DATABASE_URL=postgresql://kb_user:kb_password@postgres:5432/knowledgebase
+      - PYTHONPATH=/app
+      - ENVIRONMENT=docker
+      - AUTH_SERVICE_URL=http://192.168.1.117:8000  # Your auth service
+      - admin_username=admin
+      - admin_password=admin_password
+    depends_on:
+      - postgres
+    networks:
+      - knowledgebase-network
+
+  # Frontend React service
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend/src:/app/src  # Enable hot reload for development
+      - ./frontend/public:/app/public
+    environment:
+      - REACT_APP_API_URL=http://localhost:8001  # Point to knowledge base backend
+      - REACT_APP_AUTH_URL=http://192.168.1.117:8000  # Your auth service
+      - CHOKIDAR_USEPOLLING=true  # Enable hot reload in Docker
+    depends_on:
+      - backend
+    networks:
+      - knowledgebase-network
+
+# Network for service communication
+networks:
+  knowledgebase-network:
+    driver: bridge
+
+# Persistent volumes
+volumes:
+  postgres_data:
