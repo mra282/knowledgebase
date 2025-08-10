@@ -122,7 +122,7 @@ def _create_article_version(db: Session, article: Article, is_draft: bool = Fals
         weight_score=article.weight_score,
         is_public=article.is_public,
         is_draft=is_draft,
-        published_at=None if is_draft else datetime.utcnow(),
+        published_at=None if is_draft else datetime.now(timezone.utc),
     )
     db.add(version)
     db.commit()
