@@ -154,13 +154,6 @@ const AdminDataManagement = () => {
           
           <div className="flex space-x-2 mb-4">
             <button
-              onClick={loadTestData}
-              disabled={loading}
-              className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-medium py-2 px-4 rounded-lg"
-            >
-              Load ESO Test Data
-            </button>
-            <button
               onClick={() => setImportData('')}
               className="bg-gray-500 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg"
             >
