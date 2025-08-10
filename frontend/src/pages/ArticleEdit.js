@@ -667,7 +667,7 @@ const ArticleEdit = () => {
                         </button>
                       )}
                       {v.is_draft && (
-                        <button className="text-green-600 hover:text-green-800" onClick={handlePublishDraft}>
+                        <button className="text-green-600 hover:text-green-800" onClick={() => handlePublishDraft(v.version_number)}>
                           Publish Draft
                         </button>
                       )}
