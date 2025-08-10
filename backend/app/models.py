@@ -222,6 +222,42 @@ class Product(Base):
         return f"<Product(id={self.id}, name='{self.name}')>"
 
 
+# ==================
+# Article Versioning
+# ==================
+
+class ArticleVersion(Base):
+    """
+    Snapshot of an article at a point in time.
+
+    - version_number: monotonically increasing per article
+    - is_draft: if True, not currently live
+    - published_at: timestamp when this version was published (if any)
+    """
+    __tablename__ = "article_versions"
+    __table_args__ = (
+        UniqueConstraint("article_id", "version_number", name="uq_article_version"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_number = Column(Integer, nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    tags = Column(JSON, default=list)
+    weight_score = Column(Float, default=1.0)
+    is_public = Column(Boolean, default=True)
+    is_draft = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    published_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Relationship back to article
+    article = relationship("Article", backref="versions")
+
+    def __repr__(self):
+        return f"<ArticleVersion(id={self.id}, article_id={self.article_id}, v={self.version_number}, draft={self.is_draft})>"
+
+
 class ArticlePlatform(Base):
     """Association between Article and Platform (many-to-many)."""
     __tablename__ = "article_platforms"
