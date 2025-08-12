@@ -101,6 +101,8 @@ class Article(Base):
     view_count = Column(Integer, default=0)
     helpful_votes = Column(Integer, default=0)
     unhelpful_votes = Column(Integer, default=0)
+    # Private internal notes for agents/reviewers (not exposed on public APIs)
+    notes = Column(Text, nullable=True)
 
     def __repr__(self):
         return f"<Article(id={self.id}, title='{self.title}', weight_score={self.weight_score})>"
@@ -290,3 +292,62 @@ class ArticleProduct(Base):
     # Relationships
     article = relationship("Article", backref="article_products")
     product = relationship("Product", back_populates="articles")
+
+
+# ======================
+# Localization Entities
+# ======================
+
+class Language(Base):
+    """Available languages for localization (ISO codes)."""
+    __tablename__ = "languages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String(16), unique=True, index=True, nullable=False)  # e.g., 'en', 'es-ES'
+    name = Column(String(100), nullable=False)  # e.g., 'English', 'Spanish'
+    is_active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationship to article translations
+    articles = relationship("ArticleTranslation", back_populates="language", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<Language(id={self.id}, code='{self.code}', name='{self.name}')>"
+
+
+class TranslationGroup(Base):
+    """A group tying together sibling articles in different languages."""
+    __tablename__ = "translation_groups"
+
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship to mappings
+    mappings = relationship("ArticleTranslation", back_populates="group", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<TranslationGroup(id={self.id})>"
+
+
+class ArticleTranslation(Base):
+    """Mapping between an article, its language, and a translation group."""
+    __tablename__ = "article_translations"
+    __table_args__ = (
+        UniqueConstraint("group_id", "language_id", name="uq_group_language"),
+        UniqueConstraint("article_id", name="uq_translation_article"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id", ondelete="CASCADE"), nullable=False, index=True)
+    language_id = Column(Integer, ForeignKey("languages.id", ondelete="CASCADE"), nullable=False, index=True)
+    group_id = Column(Integer, ForeignKey("translation_groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    article = relationship("Article")
+    language = relationship("Language", back_populates="articles")
+    group = relationship("TranslationGroup", back_populates="mappings")
+
+    def __repr__(self):
+        return f"<ArticleTranslation(article_id={self.article_id}, lang_id={self.language_id}, group_id={self.group_id})>"

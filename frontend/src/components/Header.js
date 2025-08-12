@@ -55,7 +55,7 @@ const Header = ({ darkMode, toggleDarkMode }) => {
             >
               Search
             </Link>
-            {user && (
+            {(user && (user.role === 'admin' || user.role === 'moderator')) && (
               <Link 
                 to="/articles/create" 
                 className="text-gray-700 dark:text-gray-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
@@ -171,7 +171,7 @@ const Header = ({ darkMode, toggleDarkMode }) => {
                 Home
               </button>
               
-              {isAuthenticated && (
+              {(isAuthenticated && user && (user.role === 'admin' || user.role === 'moderator')) && (
                 <button
                   onClick={() => {
                     navigate('/articles/create');

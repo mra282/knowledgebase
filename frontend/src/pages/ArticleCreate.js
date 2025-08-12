@@ -13,12 +13,14 @@ const ArticleCreate = () => {
 
   const [formData, setFormData] = useState({
     title: '',
-  summary: '',
+    summary: '',
     content: '',
     category: 'general',
     tags: [],
     is_public: true
   });
+  // Internal notes (private)
+  const [notes, setNotes] = useState('');
 
   const [tagInput, setTagInput] = useState('');
   const [dynamicFields, setDynamicFields] = useState([]);
@@ -50,6 +52,16 @@ const ArticleCreate = () => {
     if (!authService.isAuthenticated()) {
       navigate('/login');
       return;
+    }
+
+    // Enforce role on UI: only admin or moderator can create; moderators only non-public
+    if (!(currentUser && (currentUser.role === 'admin' || currentUser.role === 'moderator'))) {
+      setError('You do not have permission to create articles.');
+      return;
+    }
+    if (currentUser.role === 'moderator') {
+      // Ensure default non-public for moderators
+      setFormData(prev => ({ ...prev, is_public: false }));
     }
 
     // Fetch dynamic fields (active only) and public taxonomy lists
@@ -208,6 +220,18 @@ const ArticleCreate = () => {
 
       if (response.ok) {
         const newArticle = await response.json();
+        // Save internal notes if provided
+        if (notes && notes.trim().length > 0) {
+          try {
+            await fetch(`${apiBase}/admin/articles/${newArticle.id}/notes`, {
+              method: 'PUT',
+              headers,
+              body: JSON.stringify({ notes })
+            });
+          } catch (e) {
+            console.warn('Failed to save internal notes:', e);
+          }
+        }
         // Submit dynamic field values in batch
         if (dynamicFields.length > 0) {
           const payload = dynamicFields.map(f => {
@@ -370,6 +394,7 @@ const ArticleCreate = () => {
                     type="checkbox"
                     checked={formData.is_public}
                     onChange={handleInputChange}
+                    disabled={user && user.role === 'moderator'}
                     className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
                   />
                 </div>
@@ -377,7 +402,7 @@ const ArticleCreate = () => {
                   <label htmlFor="is_public" className="font-medium text-gray-700">
                     Public Article
                   </label>
-                  <p className="text-gray-500">Allow non-authenticated users to view this article</p>
+                  <p className="text-gray-500">Allow non-authenticated users to view this article{user && user.role === 'moderator' ? ' (Moderators cannot publish)' : ''}</p>
                 </div>
               </div>
             </div>
@@ -582,6 +607,21 @@ const ArticleCreate = () => {
                 </div>
               </div>
             )}
+
+            {/* Internal Notes (private) */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Internal Notes
+              </label>
+              <textarea
+                rows={5}
+                value={notes}
+                onChange={(e)=>setNotes(e.target.value)}
+                placeholder="Optional internal notes for agents/reviewers. Not visible publicly."
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <p className="mt-1 text-xs text-gray-500">Notes are saved privately after the article is created.</p>
+            </div>
           </div>
 
           {/* Form Actions */}

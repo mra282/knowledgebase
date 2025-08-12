@@ -14,11 +14,24 @@ from app.models import (
     ArticlePlatform,
     ArticleProduct,
     ArticleVersion,
+    Language,
+    TranslationGroup,
+    ArticleTranslation,
 )
-from app.schemas import ArticleCreate, ArticleUpdate, DynamicFieldCreate, DynamicFieldUpdate, DynamicFieldOptionCreate, ArticleFieldValueCreate
+from app.schemas import (
+    ArticleCreate,
+    ArticleUpdate,
+    DynamicFieldCreate,
+    DynamicFieldUpdate,
+    DynamicFieldOptionCreate,
+    ArticleFieldValueCreate,
+    LanguageCreate,
+    LanguageUpdate,
+)
 from datetime import datetime
 import time
 import os
+import httpx
 
 def get_article(db: Session, article_id: int) -> Optional[Article]:
     """Get a single article by ID"""
@@ -122,7 +135,7 @@ def _create_article_version(db: Session, article: Article, is_draft: bool = Fals
         weight_score=article.weight_score,
         is_public=article.is_public,
         is_draft=is_draft,
-        published_at=None if is_draft else datetime.now(timezone.utc),
+    published_at=None if is_draft else datetime.utcnow(),
     )
     db.add(version)
     db.commit()
@@ -194,7 +207,7 @@ def publish_draft_version(db: Session, article_id: int, version_number: int) -> 
     db.refresh(art)
     # Mark draft as published and snapshot a published version
     ver.is_draft = False
-    ver.published_at = datetime.now(timezone.utc)
+    ver.published_at = datetime.utcnow()
     db.commit()
     _create_article_version(db, art, is_draft=False)
     return art
@@ -365,6 +378,24 @@ def increment_view_count(db: Session, article_id: int) -> bool:
     db.commit()
     return True
 
+# =================
+# Article Notes CRUD
+# =================
+
+def get_article_notes(db: Session, article_id: int) -> Optional[str]:
+    art = get_article(db, article_id)
+    if not art:
+        return None
+    return art.notes
+
+def set_article_notes(db: Session, article_id: int, notes: Optional[str]) -> bool:
+    art = get_article(db, article_id)
+    if not art:
+        return False
+    art.notes = notes
+    db.commit()
+    return True
+
 def vote_helpful(db: Session, article_id: int) -> bool:
     """Increment helpful votes (for future KCS scoring)"""
     db_article = get_article(db, article_id)
@@ -390,6 +421,143 @@ def vote_unhelpful(db: Session, article_id: int) -> bool:
     db_article.weight_score = max(0.1, db_article.weight_score - 0.05)
     db.commit()
     return True
+
+# ======================
+# Localization CRUD
+# ======================
+
+def get_languages(db: Session, include_inactive: bool = False) -> List[Language]:
+    q = db.query(Language)
+    if not include_inactive:
+        q = q.filter(Language.is_active == True)
+    return q.order_by(Language.code).all()
+
+def get_language_by_code(db: Session, code: str) -> Optional[Language]:
+    return db.query(Language).filter(Language.code == code).first()
+
+def create_language(db: Session, payload: LanguageCreate) -> Language:
+    lang = Language(code=payload.code, name=payload.name, is_active=payload.is_active)
+    db.add(lang)
+    db.commit()
+    db.refresh(lang)
+    return lang
+
+def update_language(db: Session, language_id: int, payload: LanguageUpdate) -> Optional[Language]:
+    lang = db.query(Language).get(language_id)
+    if not lang:
+        return None
+    data = payload.dict(exclude_unset=True)
+    for k, v in data.items():
+        setattr(lang, k, v)
+    db.commit()
+    db.refresh(lang)
+    return lang
+
+def delete_language(db: Session, language_id: int) -> bool:
+    lang = db.query(Language).get(language_id)
+    if not lang:
+        return False
+    db.delete(lang)
+    db.commit()
+    return True
+
+def get_article_translation_mapping(db: Session, article_id: int) -> Optional[ArticleTranslation]:
+    return db.query(ArticleTranslation).filter(ArticleTranslation.article_id == article_id).first()
+
+def get_sibling_translations(db: Session, article_id: int) -> List[ArticleTranslation]:
+    """Return other translations in the same group as the article (exclude itself)."""
+    mapping = get_article_translation_mapping(db, article_id)
+    if not mapping:
+        return []
+    return (
+        db.query(ArticleTranslation)
+        .filter(ArticleTranslation.group_id == mapping.group_id, ArticleTranslation.article_id != article_id)
+        .all()
+    )
+
+def get_group_translations(db: Session, group_id: int) -> List[ArticleTranslation]:
+    return db.query(ArticleTranslation).filter(ArticleTranslation.group_id == group_id).all()
+
+def _get_or_create_group(db: Session, group_id: Optional[int]) -> TranslationGroup:
+    if group_id:
+        grp = db.query(TranslationGroup).get(group_id)
+        if grp:
+            return grp
+    grp = TranslationGroup()
+    db.add(grp)
+    db.commit()
+    db.refresh(grp)
+    return grp
+
+async def _azure_translate(text: str, from_lang: str, to_lang: str) -> str:
+    """Translate text using Azure Cognitive Services if configured; else echo text."""
+    key = os.getenv("AZURE_TRANSLATE_KEY")
+    endpoint = os.getenv("AZURE_TRANSLATE_ENDPOINT")
+    region = os.getenv("AZURE_TRANSLATE_REGION")
+    if not key or not endpoint:
+        return text  # No-op if not configured
+    url = f"{endpoint}/translate?api-version=3.0&from={from_lang}&to={to_lang}"
+    headers = {
+        "Ocp-Apim-Subscription-Key": key,
+        "Ocp-Apim-Subscription-Region": region or "",
+        "Content-Type": "application/json",
+    }
+    body = [{"Text": text}]
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(url, headers=headers, json=body)
+        r.raise_for_status()
+        data = r.json()
+        return data[0]["translations"][0]["text"]
+
+async def attach_article_to_language_group(
+    db: Session,
+    article_id: int,
+    language_code: str,
+    group_id: Optional[int] = None,
+    auto_translate_from_article_id: Optional[int] = None,
+) -> Optional[ArticleTranslation]:
+    art = get_article(db, article_id)
+    if not art:
+        return None
+    lang = get_language_by_code(db, language_code)
+    if not lang:
+        return None
+    grp = _get_or_create_group(db, group_id)
+
+    # Ensure uniqueness per article and per (group, language)
+    exists_same_article = db.query(ArticleTranslation).filter(ArticleTranslation.article_id == article_id).first()
+    if exists_same_article:
+        return exists_same_article
+    exists_lang_in_group = (
+        db.query(ArticleTranslation)
+        .filter(ArticleTranslation.group_id == grp.id, ArticleTranslation.language_id == lang.id)
+        .first()
+    )
+    if exists_lang_in_group:
+        return None  # language already present in group
+
+    mapping = ArticleTranslation(article_id=article_id, language_id=lang.id, group_id=grp.id)
+    db.add(mapping)
+    db.commit()
+    db.refresh(mapping)
+
+    # Optional: auto-translate by creating a draft version with translated content
+    if auto_translate_from_article_id:
+        src = get_article(db, auto_translate_from_article_id)
+        if src:
+            from_lang = os.getenv("DEFAULT_SOURCE_LANG", "en")
+            try:
+                translated_title = await _azure_translate(src.title, from_lang, language_code)
+                translated_content = await _azure_translate(src.content, from_lang, language_code)
+            except Exception:
+                translated_title, translated_content = src.title, src.content
+            # Create a draft version for the target article and set translated fields
+            draft = _create_article_version(db, art, is_draft=True)
+            draft.title = translated_title
+            draft.content = translated_content
+            db.commit()
+
+    return mapping
 
 # User Permissions CRUD Operations
 

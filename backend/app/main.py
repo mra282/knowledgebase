@@ -13,7 +13,8 @@ from app.schemas import (
     SearchResult, HealthCheck, UserInfo, UserPermissionsResponse, UsersList,
     AdminDashboardStats, UserPermissionsUpdate, UserRole, LoginRequest, LoginResponse, RegisterRequest,
     ArticleImportRequest, ArticleImportResponse, DatabaseWipeResponse,
-    PlatformResponse, ProductResponse, ArticleVersionResponse
+    PlatformResponse, ProductResponse, ArticleVersionResponse,
+    LanguageResponse, ArticleTranslationResponse
 )
 from app import crud
 from app.search import get_search_service, get_rag_service, SearchService, RAGService
@@ -105,8 +106,27 @@ def get_article(article_id: int, no_count: bool = False, db: Session = Depends(g
     return ArticleResponse.from_orm(db_article)
 
 @app.post("/articles", response_model=ArticleResponse, status_code=201)
-def create_article(article: ArticleCreate, db: Session = Depends(get_db)):
-    """Create a new knowledge base article"""
+def create_article(
+    article: ArticleCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    """Create a new knowledge base article with role restrictions.
+
+    - Admin: can create public or non-public articles.
+    - Moderator: can only create non-public articles.
+    - Others: forbidden.
+    """
+    role = getattr(current_user, "user_role", "viewer")
+    if role == "admin":
+        pass  # allowed
+    elif role == "moderator":
+        # Moderators can only create non-public articles
+        if getattr(article, "is_public", True):
+            raise HTTPException(status_code=403, detail="Moderators can only create non-public articles")
+    else:
+        raise HTTPException(status_code=403, detail="Insufficient permissions to create articles")
+
     db_article = crud.create_article(db=db, article=article)
     # Optional: set initial associations
     try:
@@ -121,11 +141,35 @@ def create_article(article: ArticleCreate, db: Session = Depends(get_db)):
 
 @app.put("/articles/{article_id}", response_model=ArticleResponse)
 def update_article(
-    article_id: int, 
-    article_update: ArticleUpdate, 
-    db: Session = Depends(get_db)
+    article_id: int,
+    article_update: ArticleUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
 ):
-    """Update an existing article"""
+    """Update an existing article with role restrictions.
+
+    - Admin: can update any article, including toggling public/private.
+    - Moderator: may only update non-public articles and cannot make them public.
+    - Others: forbidden.
+    """
+    # Fetch current state for permission checks
+    current = crud.get_article(db, article_id=article_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    role = getattr(current_user, "user_role", "viewer")
+    if role == "admin":
+        pass
+    elif role == "moderator":
+        # Must be non-public to edit
+        if getattr(current, "is_public", True):
+            raise HTTPException(status_code=403, detail="Moderators can only edit non-public articles")
+        # Cannot set to public
+        if getattr(article_update, "is_public", None) is True:
+            raise HTTPException(status_code=403, detail="Moderators cannot publish articles")
+    else:
+        raise HTTPException(status_code=403, detail="Insufficient permissions to edit articles")
+
     db_article = crud.update_article(db, article_id=article_id, article_update=article_update)
     if db_article is None:
         raise HTTPException(status_code=404, detail="Article not found")
@@ -155,6 +199,13 @@ def list_article_versions_public(article_id: int, db: Session = Depends(get_db))
         raise HTTPException(status_code=404, detail="Article not found")
     versions = [v for v in crud.list_article_versions(db, article_id) if not v.is_draft]
     return versions
+
+# Public: list translation siblings for an article (if attached to a group)
+@app.get("/articles/{article_id}/translations", response_model=List[ArticleTranslationResponse])
+def list_article_translations_public(article_id: int, db: Session = Depends(get_db)):
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+    return crud.get_sibling_translations(db, article_id)
 
 # Search endpoints
 @app.get("/search", response_model=SearchResult)
@@ -252,6 +303,11 @@ def list_platforms(include_inactive: bool = False, db: Session = Depends(get_db)
 def list_products(include_inactive: bool = False, db: Session = Depends(get_db)):
     """List products (active by default)."""
     return crud.get_products(db, include_inactive=include_inactive)
+
+# Public languages endpoint
+@app.get("/languages", response_model=List[LanguageResponse])
+def public_languages(include_inactive: bool = False, db: Session = Depends(get_db)):
+    return crud.get_languages(db, include_inactive=include_inactive)
 
 @app.post("/articles/{article_id}/unhelpful", status_code=200) 
 def vote_unhelpful(article_id: int, db: Session = Depends(get_db)):

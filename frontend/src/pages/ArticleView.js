@@ -11,6 +11,8 @@ const ArticleView = () => {
   const [error, setError] = useState(null);
   const [user, setUser] = useState(null);
   const [versions, setVersions] = useState([]);
+  const [notes, setNotes] = useState('');
+  const [notesLoaded, setNotesLoaded] = useState(false);
   const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
 
   const loadArticle = useCallback(async (incrementView = true) => {
@@ -52,6 +54,23 @@ const ArticleView = () => {
         if (resp.ok) setVersions(await resp.json());
       } catch (e) {
         console.warn('Failed to load versions', e);
+      }
+    })();
+    // Load internal notes for authenticated users
+    (async () => {
+      try {
+        if (authService.isAuthenticated()) {
+          const headers = { 'Authorization': `Bearer ${authService.getToken()}` };
+          const resp = await fetch(`${apiBase}/admin/articles/${id}/notes`, { headers });
+          if (resp.ok) {
+            const data = await resp.json();
+            setNotes(data?.notes || '');
+          }
+        }
+      } catch (e) {
+        // Non-fatal
+      } finally {
+        setNotesLoaded(true);
       }
     })();
   }, [loadArticle]);
@@ -216,6 +235,18 @@ const ArticleView = () => {
               />
             </div>
           </div>
+
+          {/* Internal Notes (visible to authenticated users) */}
+          {authService.isAuthenticated() && notesLoaded && (
+            <div className="bg-yellow-50 dark:bg-yellow-900/30 rounded-lg border border-yellow-200 dark:border-yellow-800 p-6 mb-6">
+              <h2 className="text-lg font-semibold text-yellow-900 dark:text-yellow-200 mb-2">Internal Notes</h2>
+              {notes ? (
+                <pre className="whitespace-pre-wrap text-sm text-yellow-900 dark:text-yellow-100">{notes}</pre>
+              ) : (
+                <p className="text-sm text-yellow-800 dark:text-yellow-200">No notes.</p>
+              )}
+            </div>
+          )}
 
           {/* Published Versions */}
           {versions && versions.length > 0 && (

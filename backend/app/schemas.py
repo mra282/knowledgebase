@@ -99,6 +99,17 @@ class SearchResult(BaseModel):
     total_results: int
     search_time_ms: float
 
+# ================
+# Article Notes API
+# ================
+
+class ArticleNotesResponse(BaseModel):
+    article_id: int
+    notes: Optional[str] = None
+
+class ArticleNotesUpdate(BaseModel):
+    notes: Optional[str] = None
+
 # ======================
 # Article Version Schemas
 # ======================
@@ -183,6 +194,50 @@ class ArticlePlatformSet(BaseModel):
 
 class ArticleProductSet(BaseModel):
     product_ids: List[int] = []
+
+# ======================
+# Localization Schemas
+# ======================
+
+class LanguageBase(BaseModel):
+    code: str
+    name: str
+    is_active: bool = True
+
+class LanguageCreate(LanguageBase):
+    pass
+
+class LanguageUpdate(BaseModel):
+    code: Optional[str] = None
+    name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class LanguageResponse(LanguageBase):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class TranslationGroupRef(BaseModel):
+    id: int
+
+class ArticleTranslationResponse(BaseModel):
+    id: int
+    article_id: int
+    language: LanguageResponse
+    group: TranslationGroupRef
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ArticleTranslationCreate(BaseModel):
+    article_id: int
+    language_code: str
+    group_id: Optional[int] = None  # if none, create new group
+    auto_translate_from_article_id: Optional[int] = None  # source article for MT
 
 class HealthCheck(BaseModel):
     """Schema for health check endpoint"""

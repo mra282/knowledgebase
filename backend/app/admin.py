@@ -5,6 +5,7 @@ from app.database import get_db
 from app import crud, schemas
 from app.models import DynamicField, DynamicFieldOption, ArticleFieldValue
 from app.auth import get_current_user_with_permissions
+from datetime import datetime
 
 router = APIRouter(
     prefix="/admin",
@@ -232,6 +233,14 @@ def _require_admin_or_moderator(current_user) -> None:
     if not (current_user.user_role in ["admin", "moderator"] or current_user.has_permission("manage_users")):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
+def _require_editor_or_higher(current_user) -> None:
+    if not (
+        current_user.user_role in ["admin", "moderator"]
+        or current_user.has_permission("edit_articles")
+        or current_user.has_permission("create_articles")
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
 
 @router.get("/platforms", response_model=List[schemas.PlatformResponse])
 def list_platforms(
@@ -444,6 +453,102 @@ def publish_draft(
         raise HTTPException(status_code=404, detail="Draft not found")
     return schemas.ArticleResponse.from_orm(art)
 
+# ======================
+# Localization Management
+# ======================
+
+@router.get("/languages", response_model=List[schemas.LanguageResponse])
+def list_languages(
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    return crud.get_languages(db, include_inactive=include_inactive)
+
+@router.post("/languages", response_model=schemas.LanguageResponse, status_code=201)
+def create_language(
+    payload: schemas.LanguageCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    try:
+        return crud.create_language(db, payload)
+    except Exception as e:
+        if "UNIQUE" in str(e).upper():
+            raise HTTPException(status_code=400, detail="Language code already exists")
+        raise
+
+@router.put("/languages/{language_id}", response_model=schemas.LanguageResponse)
+def update_language(
+    language_id: int,
+    payload: schemas.LanguageUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    lang = crud.update_language(db, language_id, payload)
+    if not lang:
+        raise HTTPException(status_code=404, detail="Language not found")
+    return lang
+
+@router.delete("/languages/{language_id}")
+def delete_language(
+    language_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    ok = crud.delete_language(db, language_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Language not found")
+    return {"message": "Language deleted"}
+
+@router.post("/translations", response_model=schemas.ArticleTranslationResponse, status_code=201)
+async def attach_translation(
+    payload: schemas.ArticleTranslationCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    mapping = await crud.attach_article_to_language_group(
+        db,
+        article_id=payload.article_id,
+        language_code=payload.language_code,
+        group_id=payload.group_id,
+        auto_translate_from_article_id=payload.auto_translate_from_article_id,
+    )
+    if not mapping:
+        raise HTTPException(status_code=400, detail="Failed to attach translation (article/lang/group conflict or missing language)")
+    return mapping
+
+@router.get("/articles/{article_id}/translations", response_model=List[schemas.ArticleTranslationResponse])
+def list_article_translations_admin(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_admin_or_moderator(current_user)
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+    return crud.get_sibling_translations(db, article_id)
+
+@router.get("/articles/{article_id}/translation-mapping", response_model=schemas.ArticleTranslationResponse)
+def get_article_translation_mapping_admin(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    """Get this article's translation mapping (its language and group)."""
+    _require_admin_or_moderator(current_user)
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+    mapping = crud.get_article_translation_mapping(db, article_id)
+    if not mapping:
+        raise HTTPException(status_code=404, detail="Translation mapping not found")
+    return mapping
+
 @router.post("/articles/{article_id}/versions/{version_number}/rollback", response_model=schemas.ArticleResponse)
 def rollback_article(
     article_id: int,
@@ -455,6 +560,78 @@ def rollback_article(
     art = crud.rollback_article_to_version(db, article_id, version_number)
     if not art:
         raise HTTPException(status_code=404, detail="Version not found or not publishable")
+    return schemas.ArticleResponse.from_orm(art)
+
+# =====================
+# Article Notes (Admin)
+# =====================
+
+@router.get("/articles/{article_id}/notes", response_model=schemas.ArticleNotesResponse)
+def get_article_notes(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_editor_or_higher(current_user)
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+    notes = crud.get_article_notes(db, article_id)
+    return {"article_id": article_id, "notes": notes}
+
+@router.put("/articles/{article_id}/notes", response_model=schemas.ArticleNotesResponse)
+def update_article_notes(
+    article_id: int,
+    payload: schemas.ArticleNotesUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_editor_or_higher(current_user)
+    if not crud.get_article(db, article_id):
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    # Admins can fully edit notes; non-admin editors can only add a note entry (prepended with timestamp and name)
+    is_admin = (current_user.user_role == "admin")
+
+    # Normalize incoming text
+    incoming = (payload.notes or "").strip()
+
+    if is_admin:
+        # Full replace allowed for admins (including clearing notes)
+        ok = crud.set_article_notes(db, article_id, incoming)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to update notes")
+        return {"article_id": article_id, "notes": incoming}
+    else:
+        # For non-admins, require non-empty note to add
+        if not incoming:
+            raise HTTPException(status_code=400, detail="Note content is required")
+
+        # Build the prepended note block with timestamp and user name
+        user_label = current_user.full_name or current_user.username or "user"
+        ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        new_block = f"[{ts}] {user_label}:\n{incoming}\n\n"
+
+        # Fetch existing notes and prepend
+        existing = crud.get_article_notes(db, article_id) or ""
+        combined = f"{new_block}{existing}" if existing else new_block
+
+        ok = crud.set_article_notes(db, article_id, combined)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to add note")
+        return {"article_id": article_id, "notes": combined}
+
+# Optional: admin view of article including notes
+@router.get("/articles/{article_id}/with-notes", response_model=schemas.ArticleResponse)
+def get_article_with_notes(
+    article_id: int,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_with_permissions),
+):
+    _require_editor_or_higher(current_user)
+    art = crud.get_article(db, article_id)
+    if not art:
+        raise HTTPException(status_code=404, detail="Article not found")
+    # ArticleResponse currently doesn't include notes; frontend should fetch notes separately.
     return schemas.ArticleResponse.from_orm(art)
 
 # Utility endpoints for field management

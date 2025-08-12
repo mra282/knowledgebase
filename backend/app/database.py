@@ -54,6 +54,7 @@ def create_tables():
     Base.metadata.create_all(bind=engine)
     # Ensure enums are up to date (especially for PostgreSQL)
     _ensure_postgres_enums()
+    _ensure_article_notes_column()
 
 
 def _ensure_postgres_enums():
@@ -115,6 +116,32 @@ def _ensure_postgres_enums():
     except Exception as e:
         # Don't block startup; just log to stdout
         print(f"Warning: failed to ensure PostgreSQL enums: {e}")
+
+def _ensure_article_notes_column():
+    """Add 'notes' column to 'articles' if missing (SQLite/PostgreSQL).
+
+    This is a lightweight migration helper to avoid Alembic for this small change.
+    """
+    try:
+        with engine.begin() as conn:
+            if engine.dialect.name == "sqlite":
+                rows = conn.exec_driver_sql("PRAGMA table_info(articles)").fetchall()
+                cols = {r[1] for r in rows}
+                if "notes" not in cols:
+                    conn.exec_driver_sql("ALTER TABLE articles ADD COLUMN notes TEXT")
+            elif engine.dialect.name == "postgresql":
+                exists = conn.execute(
+                    text(
+                        """
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'articles' AND column_name = 'notes'
+                        """
+                    )
+                ).scalar()
+                if not exists:
+                    conn.execute(text("ALTER TABLE articles ADD COLUMN notes TEXT"))
+    except Exception as e:
+        print(f"Warning: failed to ensure 'notes' column: {e}")
 
 def seed_sample_data():
     """

@@ -36,6 +36,31 @@ const ArticleEdit = () => {
   // Versioning state
   const [versions, setVersions] = useState([]);
   const [draftVersion, setDraftVersion] = useState(null);
+  // Localization state
+  const [languages, setLanguages] = useState([]);
+  const [mapping, setMapping] = useState(null); // { id, article_id, language, group }
+  const [siblings, setSiblings] = useState([]); // other mappings in same group
+  const [selectedLangCode, setSelectedLangCode] = useState('');
+  const [groupIdInput, setGroupIdInput] = useState('');
+  const [seedFromArticleId, setSeedFromArticleId] = useState('');
+  const [articlesForSeed, setArticlesForSeed] = useState([]);
+  // Notes state (internal/private)
+  const [notes, setNotes] = useState(''); // existing notes
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [notesSaving, setNotesSaving] = useState(false); // for admin save
+  const [addingNote, setAddingNote] = useState(false); // for agent add
+  const [notesMessage, setNotesMessage] = useState('');
+  const [newNote, setNewNote] = useState('');
+  const currentUser = authService.getCurrentUser();
+  const isAdmin = !!currentUser && currentUser.role === 'admin';
+  const role = currentUser?.role || '';
+  const isModerator = role === 'moderator';
+  const isEditor = role === 'editor';
+  const canEditArticle = isAdmin || (isModerator && !formData.is_public);
+  const canTogglePublic = isAdmin; // only admins can change publish status
+  const canDelete = isAdmin;
+  const canManageVersions = isAdmin; // drafts, publish, rollback
+  const canManageTranslations = isAdmin;
 
   const loadArticle = useCallback(async () => {
     setLoading(true);
@@ -99,6 +124,47 @@ const ArticleEdit = () => {
     }
 
     loadArticle();
+    // Load localization data in parallel
+    (async () => {
+      try {
+        const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+        const langsResp = await fetch(`${apiBase}/languages`);
+        if (langsResp.ok) setLanguages(await langsResp.json());
+        // Load mapping and siblings via admin (auth required)
+        const headers = {};
+        if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+        const mapResp = await fetch(`${apiBase}/admin/articles/${id}/translation-mapping`, { headers });
+        if (mapResp.ok) {
+          const m = await mapResp.json();
+          setMapping(m);
+          setSelectedLangCode(m.language?.code || '');
+          setGroupIdInput(String(m.group?.id || ''));
+        }
+        const sibResp = await fetch(`${apiBase}/admin/articles/${id}/translations`, { headers });
+        if (sibResp.ok) setSiblings(await sibResp.json());
+        // For seeding dropdown, load some articles
+        const listResp = await fetch(`${apiBase}/articles?limit=1000`);
+        if (listResp.ok) {
+          const data = await listResp.json();
+          setArticlesForSeed(data.articles || []);
+        }
+        // Load internal notes
+        try {
+          setNotesLoading(true);
+          const headersNotes = {};
+          if (authService.isAuthenticated()) headersNotes['Authorization'] = `Bearer ${authService.getToken()}`;
+          const notesResp = await fetch(`${apiBase}/admin/articles/${id}/notes`, { headers: headersNotes });
+          if (notesResp.ok) {
+            const n = await notesResp.json();
+            setNotes(n?.notes || '');
+          }
+        } finally {
+          setNotesLoading(false);
+        }
+      } catch (e) {
+        console.warn('Failed to load localization data:', e);
+      }
+    })();
     // Load versions (admin endpoint preferred)
     (async () => {
       try {
@@ -140,6 +206,67 @@ const ArticleEdit = () => {
     }));
   };
 
+  // Save full notes (admin only)
+  const handleSaveNotes = async () => {
+    setNotesSaving(true);
+    setNotesMessage('');
+    try {
+      const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+      const headers = { 'Content-Type': 'application/json' };
+      if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+      const resp = await fetch(`${apiBase}/admin/articles/${id}/notes`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ notes })
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(()=>({detail:'Failed to save notes'}));
+        throw new Error(err.detail || 'Failed to save notes');
+      }
+      setNotesMessage('Notes saved');
+    } catch (e) {
+      setError(e.message || 'Failed to save notes');
+    } finally {
+      setNotesSaving(false);
+      setTimeout(()=>setNotesMessage(''), 2000);
+    }
+  };
+
+  // Add a single note entry (non-admin path)
+  const handleAddNote = async () => {
+    if (!newNote.trim()) {
+      setNotesMessage('Enter a note first');
+      setTimeout(()=>setNotesMessage(''), 1500);
+      return;
+    }
+    setAddingNote(true);
+    setNotesMessage('');
+    try {
+      const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+      const headers = { 'Content-Type': 'application/json' };
+      if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+      const resp = await fetch(`${apiBase}/admin/articles/${id}/notes`, {
+        method: 'PUT',
+        headers,
+        // Backend will prepend timestamp/name and append to existing
+        body: JSON.stringify({ notes: newNote })
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(()=>({detail:'Failed to add note'}));
+        throw new Error(err.detail || 'Failed to add note');
+      }
+      const data = await resp.json();
+      setNotes(data?.notes || ''); // refresh notes
+      setNewNote('');
+      setNotesMessage('Note added');
+    } catch (e) {
+      setError(e.message || 'Failed to add note');
+    } finally {
+      setAddingNote(false);
+      setTimeout(()=>setNotesMessage(''), 2000);
+    }
+  };
+
   const handleAddTag = (e) => {
     e.preventDefault();
     if (tagInput.trim() && !formData.tags.includes(tagInput.trim())) {
@@ -163,6 +290,12 @@ const ArticleEdit = () => {
     setSaving(true);
     setError(null);
     setSuccess(false);
+
+    if (!canEditArticle) {
+      setError("You don't have permission to edit this article.");
+      setSaving(false);
+      return;
+    }
 
     // Validation
     if (!formData.title.trim()) {
@@ -234,6 +367,10 @@ const ArticleEdit = () => {
   };
 
   const handleDelete = async () => {
+    if (!canDelete) {
+      setError("Only admins can delete articles.");
+      return;
+    }
     if (window.confirm('Are you sure you want to delete this article? This action cannot be undone.')) {
       try {
         const headers = {};
@@ -261,6 +398,7 @@ const ArticleEdit = () => {
 
   // ===== Versioning actions =====
   const handleSaveDraft = async () => {
+  if (!canManageVersions) { setError('Only admins can manage drafts.'); return; }
     setSaving(true);
     setError(null);
     try {
@@ -301,6 +439,7 @@ const ArticleEdit = () => {
   };
 
   const handlePublishDraft = async () => {
+  if (!canManageVersions) { setError('Only admins can publish drafts.'); return; }
     if (!draftVersion) return;
     setSaving(true);
     setError(null);
@@ -327,6 +466,7 @@ const ArticleEdit = () => {
   };
 
   const handleRollback = async (versionNumber) => {
+  if (!canManageVersions) { setError('Only admins can rollback versions.'); return; }
     if (!window.confirm(`Rollback to version ${versionNumber}? This will overwrite the live article.`)) return;
     setSaving(true);
     setError(null);
@@ -345,6 +485,45 @@ const ArticleEdit = () => {
       setSuccess(true);
     } catch (e) {
       setError(e.message || 'Failed to rollback');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // ===== Localization actions =====
+  const handleAttachTranslation = async (e) => {
+    e.preventDefault();
+  if (!canManageTranslations) { setError('Only admins can change translation mappings.'); return; }
+    if (!selectedLangCode) { setError('Select a language for this article'); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      const apiBase = process.env.REACT_APP_API_URL || 'http://localhost:8001';
+      const headers = { 'Content-Type': 'application/json' };
+      if (authService.isAuthenticated()) headers['Authorization'] = `Bearer ${authService.getToken()}`;
+      const resp = await fetch(`${apiBase}/admin/translations`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          article_id: Number(id),
+          language_code: selectedLangCode,
+          group_id: groupIdInput ? Number(groupIdInput) : null,
+          auto_translate_from_article_id: seedFromArticleId ? Number(seedFromArticleId) : null,
+        })
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(()=>({detail:'Failed to link translation'}));
+        throw new Error(err.detail || 'Failed to link translation');
+      }
+      const m = await resp.json();
+      setMapping(m);
+      setGroupIdInput(String(m.group?.id || ''));
+      // refresh siblings
+      const sibResp = await fetch(`${apiBase}/admin/articles/${id}/translations`, { headers });
+      if (sibResp.ok) setSiblings(await sibResp.json());
+      setSuccess(true);
+    } catch (e) {
+      setError(e.message || 'Failed to attach translation');
     } finally {
       setSaving(false);
     }
@@ -389,6 +568,11 @@ const ArticleEdit = () => {
             <div>
               <h1 className="text-2xl font-bold text-gray-900">Edit Article</h1>
               <p className="text-sm text-gray-600">Update article information</p>
+              {(!canEditArticle) && (
+                <p className="mt-1 text-xs text-amber-700 bg-amber-50 inline-block px-2 py-1 rounded">
+                  Read-only: {isEditor ? 'Editors cannot edit articles.' : 'Moderators can edit only non-public articles.'}
+                </p>
+              )}
             </div>
             <div className="flex space-x-2">
               <button 
@@ -434,6 +618,7 @@ const ArticleEdit = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 placeholder="Enter article title"
                 required
+                disabled={!canEditArticle}
               />
             </div>
 
@@ -466,6 +651,7 @@ const ArticleEdit = () => {
                   value={formData.category}
                   onChange={handleInputChange}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={!canEditArticle}
                 >
                   <option value="general">General</option>
                   <option value="troubleshooting">Troubleshooting</option>
@@ -485,13 +671,16 @@ const ArticleEdit = () => {
                     checked={formData.is_public}
                     onChange={handleInputChange}
                     className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    disabled={!canTogglePublic}
                   />
                 </div>
                 <div className="ml-3 text-sm">
                   <label htmlFor="is_public" className="font-medium text-gray-700">
                     Public Article
                   </label>
-                  <p className="text-gray-500">Allow non-authenticated users to view this article</p>
+                  <p className="text-gray-500">
+                    Allow non-authenticated users to view this article{!canTogglePublic ? ' (admins only can change this)' : ''}
+                  </p>
                 </div>
               </div>
             </div>
@@ -508,13 +697,15 @@ const ArticleEdit = () => {
                     className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-blue-100 text-blue-700"
                   >
                     {tag}
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveTag(tag)}
-                      className="ml-1 text-blue-500 hover:text-blue-700"
-                    >
-                      ×
-                    </button>
+                    {canEditArticle && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTag(tag)}
+                        className="ml-1 text-blue-500 hover:text-blue-700"
+                      >
+                        ×
+                      </button>
+                    )}
                   </span>
                 ))}
               </div>
@@ -530,11 +721,13 @@ const ArticleEdit = () => {
                       handleAddTag(e);
                     }
                   }}
+                  disabled={!canEditArticle}
                 />
                 <button
                   type="button"
                   onClick={handleAddTag}
                   className="px-4 py-2 bg-gray-200 text-gray-700 border border-l-0 border-gray-300 rounded-r-md hover:bg-gray-300"
+                  disabled={!canEditArticle}
                 >
                   Add
                 </button>
@@ -544,7 +737,7 @@ const ArticleEdit = () => {
             {/* Content (Rich Text) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Content *</label>
-              <ReactQuill theme="snow" value={formData.content} onChange={handleContentChange} />
+              <ReactQuill theme="snow" value={formData.content} onChange={handleContentChange} readOnly={!canEditArticle} />
               <p className="mt-1 text-sm text-gray-500">Use the editor to format your content. Summary updates automatically.</p>
             </div>
 
@@ -557,6 +750,7 @@ const ArticleEdit = () => {
                   value={selectedPlatformIds.map(String)}
                   onChange={(e) => setSelectedPlatformIds(Array.from(e.target.selectedOptions).map(o => Number(o.value)))}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent min-h-[120px]"
+                  disabled={!canEditArticle}
                 >
                   {platforms.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
@@ -571,6 +765,7 @@ const ArticleEdit = () => {
                   value={selectedProductIds.map(String)}
                   onChange={(e) => setSelectedProductIds(Array.from(e.target.selectedOptions).map(o => Number(o.value)))}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent min-h-[120px]"
+                  disabled={!canEditArticle}
                 >
                   {products.map(p => (
                     <option key={p.id} value={p.id}>{p.name}</option>
@@ -584,33 +779,39 @@ const ArticleEdit = () => {
           {/* Form Actions */}
           <div className="border-t border-gray-200 px-6 py-4">
             <div className="flex justify-between">
-              <button
-                type="button"
-                onClick={handleDelete}
-                className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
-                disabled={saving}
-              >
-                Delete Article
-              </button>
-              <div className="flex space-x-3">
-                {/* Draft controls */}
+              {canDelete ? (
                 <button
                   type="button"
-                  onClick={handleSaveDraft}
-                  className="px-4 py-2 border border-blue-300 text-blue-700 rounded-md hover:bg-blue-50"
+                  onClick={handleDelete}
+                  className="px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600"
                   disabled={saving}
                 >
-                  Save Draft
+                  Delete Article
                 </button>
-                {draftVersion && (
-                  <button
-                    type="button"
-                    onClick={handlePublishDraft}
-                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
-                    disabled={saving}
-                  >
-                    Publish Draft (v{draftVersion.version_number})
-                  </button>
+              ) : <div />}
+              <div className="flex space-x-3">
+                {/* Draft controls */}
+                {canManageVersions && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleSaveDraft}
+                      className="px-4 py-2 border border-blue-300 text-blue-700 rounded-md hover:bg-blue-50"
+                      disabled={saving}
+                    >
+                      Save Draft
+                    </button>
+                    {draftVersion && (
+                      <button
+                        type="button"
+                        onClick={handlePublishDraft}
+                        className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+                        disabled={saving}
+                      >
+                        Publish Draft (v{draftVersion.version_number})
+                      </button>
+                    )}
+                  </>
                 )}
                 <button
                   type="button"
@@ -622,7 +823,7 @@ const ArticleEdit = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={saving}
+                  disabled={saving || !canEditArticle}
                   className="px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {saving ? 'Saving...' : 'Save Changes'}
@@ -661,12 +862,12 @@ const ArticleEdit = () => {
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(v.created_at).toLocaleString()}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{v.published_at ? new Date(v.published_at).toLocaleString() : '-'}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm">
-                      {!v.is_draft && (
+                      {canManageVersions && !v.is_draft && (
                         <button className="text-blue-600 hover:text-blue-800" onClick={() => handleRollback(v.version_number)}>
                           Rollback to this version
                         </button>
                       )}
-                      {v.is_draft && (
+                      {canManageVersions && v.is_draft && (
                         <button className="text-green-600 hover:text-green-800" onClick={() => handlePublishDraft(v.version_number)}>
                           Publish Draft
                         </button>
@@ -676,6 +877,164 @@ const ArticleEdit = () => {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+
+        {/* Translations panel */}
+        <div className="mt-8 bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-gray-800">Translations</h3>
+          </div>
+          <div className="p-6 space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">This Article's Language</label>
+                <select
+                  value={selectedLangCode}
+                  onChange={(e)=>setSelectedLangCode(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={!canManageTranslations}
+                >
+                  <option value="">Select language...</option>
+                  {languages.map(l => (
+                    <option key={l.id} value={l.code}>{l.name} ({l.code})</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">Current: {mapping ? `${mapping.language?.name} (${mapping.language?.code})` : 'Not linked'}</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Translation Group</label>
+                <input
+                  type="text"
+                  value={groupIdInput}
+                  onChange={(e)=>setGroupIdInput(e.target.value)}
+                  placeholder="Existing group ID or blank to create"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={!canManageTranslations}
+                />
+                <p className="mt-1 text-xs text-gray-500">Group ID will be created if left blank.</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Seed From Article (optional)</label>
+                <select
+                  value={seedFromArticleId}
+                  onChange={(e)=>setSeedFromArticleId(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={!canManageTranslations}
+                >
+                  <option value="">None (manual)</option>
+                  {articlesForSeed.map(a => (
+                    <option key={a.id} value={a.id}>{a.id} — {a.title}</option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-gray-500">If Azure Translate is configured, content will be translated into a draft version.</p>
+              </div>
+              <div className="flex items-end">
+                {canManageTranslations && (
+                  <button
+                    type="button"
+                    onClick={handleAttachTranslation}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    disabled={saving || !selectedLangCode}
+                  >
+                    {mapping ? 'Update Mapping' : 'Link Translation'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <h4 className="text-md font-semibold text-gray-800 mb-2">Sibling Articles in Group</h4>
+              {siblings.length === 0 ? (
+                <p className="text-sm text-gray-600">No sibling articles yet.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {siblings.map(s => (
+                    <li key={s.id} className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded px-3 py-2">
+                      <div>
+                        <span className="text-sm text-gray-800">{s.language?.name} ({s.language?.code})</span>
+                        <span className="text-xs text-gray-500 ml-2">Article ID: {s.article_id}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="text-blue-600 hover:text-blue-800 text-sm"
+                        onClick={() => navigate(`/articles/${s.article_id}`)}
+                      >
+                        View
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Notes panel (internal) */}
+        <div className="mt-8 bg-white rounded-lg shadow-sm border border-gray-200">
+          <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+            <h3 className="text-lg font-semibold text-gray-800">Internal Notes</h3>
+            {notesMessage && <span className="text-sm text-green-600">{notesMessage}</span>}
+          </div>
+          <div className="p-6 space-y-3">
+            {notesLoading ? (
+              <p className="text-sm text-gray-500">Loading notes…</p>
+            ) : (
+              <>
+                {isAdmin ? (
+                  <>
+                    <textarea
+                      value={notes}
+                      onChange={(e)=>setNotes(e.target.value)}
+                      rows={8}
+                      placeholder="Edit all internal notes. Not visible publicly."
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={handleSaveNotes}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                        disabled={notesSaving}
+                      >
+                        {notesSaving ? 'Saving…' : 'Save Notes'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Existing Notes</label>
+                      <pre className="whitespace-pre-wrap text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3 min-h-[80px]">{notes || 'No notes yet.'}</pre>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Add Note</label>
+                      <textarea
+                        value={newNote}
+                        onChange={(e)=>setNewNote(e.target.value)}
+                        rows={4}
+                        placeholder="Type your note. On save it will be timestamped and attributed to you."
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
+                      <div className="flex justify-end mt-2">
+                        <button
+                          type="button"
+                          onClick={handleAddNote}
+                          className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                          disabled={addingNote}
+                        >
+                          {addingNote ? 'Adding…' : 'Add Note'}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+            <p className="text-xs text-gray-500">Notes are retained with the article but not exposed via public APIs.</p>
           </div>
         </div>
       </main>
